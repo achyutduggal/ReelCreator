@@ -52,6 +52,7 @@ The final output is a **sequence**: an ordered list of `(beat → snippet)` assi
 | AI Vision | Google Gemini 2.5 Flash (multimodal) |
 | Text Embeddings | Google Gemini Embedding (`gemini-embedding-001`) |
 | Similarity Matching | NumPy (cosine similarity) |
+| Voice-over (TTS) | Edge TTS (`edge-tts`) — Microsoft Edge neural voices, free, no API key |
 | Data Storage | Local filesystem + JSON metadata |
 | Image Handling | Pillow (PIL) |
 
@@ -64,36 +65,49 @@ The final output is a **sequence**: an ordered list of `(beat → snippet)` assi
 ├──────────────────────────────────────────────────────┤
 │                   Services (Business Logic)           │
 │  metadata.py  │ script_generator.py │ clip_matcher.py │
-│               │                     │ caption_gen.py  │
+│               │ voice_generator.py  │ caption_gen.py  │
 ├──────────────────────────────────────────────────────┤
 │                  Storage (Filesystem + JSON)          │
-│  storage/uploads/  │  storage/metadata/  │ renders/   │
+│  storage/uploads/  │  storage/metadata/  │  renders/  │
+│                    │  storage/voices/    │            │
 └──────────────────────────────────────────────────────┘
 ```
 
 ### Request Pipeline
 
 ```
-User uploads clips          User enters prompt         User clicks Export
-       │                           │                          │
-  POST /api/upload          POST /api/generate-script    POST /api/render
-       │                           │                          │
-  ┌────▼─────┐              ┌──────▼──────┐             ┌─────▼──────┐
-  │ Save file│              │ Gemini LLM  │             │ Subprocess │
-  │ Extract  │              │ generates   │             │ call to    │
-  │ keyframes│              │ beat script │             │ Remotion   │
-  │ Describe │              └──────┬──────┘             │ renderer   │
-  │ Embed    │                     │                    └────────────┘
-  └────┬─────┘              POST /api/match-clips
+User uploads clips          User enters prompt                     User clicks Export
+       │                           │                                      │
+  POST /api/upload          POST /api/generate-script              POST /api/render
+       │                           │                                      │
+  ┌────▼─────┐              ┌──────▼──────┐                        ┌─────▼──────┐
+  │ Save file│              │ Gemini LLM  │                        │ Subprocess │
+  │ Extract  │              │ generates   │                        │ call to    │
+  │ keyframes│              │ beat script │                        │ Remotion   │
+  │ Describe │              │ + duration  │                        │ renderer   │
+  │ Embed    │              │ enforcement │                        │ (video +   │
+  │          │              └──────┬──────┘                        │  audio)    │
+  └────┬─────┘                     │                               └────────────┘
+       │                    POST /api/match-clips
        │                           │
        │                    ┌──────▼──────┐
        │                    │ Embed beats │
        │                    │ Cosine sim  │
        │                    │ Greedy match│
        │                    │ + Captions  │
+       │                    └──────┬──────┘
+       │                           │
+       │                    POST /api/generate-voice
+       │                           │
+       │                    ┌──────▼──────┐
+       │                    │ Edge TTS    │
+       │                    │ Caption →   │
+       │                    │ MP3 audio   │
+       │                    │ per beat    │
        │                    └─────────────┘
        ▼
-  Returns ClipMetadata       Returns Sequence         Returns MP4 URL
+  Returns ClipMetadata       Returns Sequence          Returns MP4 URL
+                             (with voice_url)           (with audio)
 ```
 
 ---
@@ -109,14 +123,15 @@ backend/
 ├── routers/
 │   ├── __init__.py
 │   ├── upload.py                # POST /api/upload
-│   ├── generate.py              # POST /api/generate-script, POST /api/match-clips
+│   ├── generate.py              # POST /api/generate-script, /api/match-clips, /api/generate-voice
 │   └── render.py                # POST /api/render
 ├── services/
 │   ├── __init__.py
 │   ├── metadata.py              # Keyframe extraction, Gemini Vision, Gemini Embedding
 │   ├── script_generator.py      # Beat-by-beat script generation via Gemini LLM
 │   ├── clip_matcher.py          # Embedding similarity matching + greedy assignment
-│   └── caption_generator.py     # Marketing caption generation per beat
+│   ├── caption_generator.py     # Marketing caption generation per beat
+│   └── voice_generator.py       # Edge TTS voice-over generation per beat
 ├── models/
 │   ├── __init__.py
 │   └── schemas.py               # Pydantic request/response models
@@ -128,6 +143,10 @@ backend/
     │       ├── keyframe_0.jpg
     │       ├── keyframe_1.jpg
     │       └── ...
+    ├── voices/                  # Generated TTS MP3 files per beat
+    │   ├── voice_beat_0_{clip_id}.mp3
+    │   ├── voice_beat_1_{clip_id}.mp3
+    │   └── ...
     └── renders/                 # Rendered MP4 output files
 ```
 
@@ -189,6 +208,7 @@ A matched beat-to-clip assignment — the final output that drives the video ren
 | `caption` | `str` | Marketing caption text (3-8 words) |
 | `score` | `float` | Cosine similarity score (0.0-1.0) |
 | `video_url` | `str` | URL to the source video file |
+| `voice_url` | `str` | URL to the generated TTS MP3 file (empty if no voice) |
 
 ### Request/Response Models
 
@@ -231,13 +251,14 @@ app.add_middleware(
 **Static File Serving** — Mounts the entire `storage/` directory at `/api/storage/`. This means:
 - Uploaded videos are accessible at `/api/storage/uploads/{clip_id}_{filename}`
 - Keyframe images at `/api/storage/metadata/{clip_id}/keyframe_{i}.jpg`
+- Voice-over MP3s at `/api/storage/voices/voice_beat_{i}_{clip_id}.mp3`
 - Rendered outputs at `/api/storage/renders/{render_id}.mp4`
 
 ```python
 app.mount("/api/storage", StaticFiles(directory="storage"), name="storage")
 ```
 
-**Directory Creation** — Ensures `storage/uploads/`, `storage/metadata/`, and `storage/renders/` exist on startup.
+**Directory Creation** — Ensures `storage/uploads/`, `storage/metadata/`, `storage/renders/`, and `storage/voices/` exist on startup.
 
 **Router Registration** — All routers are prefixed with `/api`:
 
@@ -510,9 +531,9 @@ async def generate_script(
 
    **Key design decisions in this prompt:**
    - The available footage is included so the LLM writes **achievable** beats (not hallucinated shots)
-   - Duration constraint ensures the beats add up to the target
-   - Beat duration range (1.5-3s) ensures good pacing for marketing content
-   - Mood field is used later for caption tone matching
+   - Duration constraint is emphasized with "MUST equal EXACTLY" wording
+   - Beat duration range (2-4s) ensures good pacing for marketing content
+   - Mood field is used later for caption tone matching and voice-over tone
 
 3. **Call Gemini 2.5 Flash** — Sends both the system prompt and the user's creative direction:
    ```python
@@ -531,7 +552,22 @@ async def generate_script(
    beats_data = json.loads(text)
    ```
 
-5. **Return Beat objects** — `[Beat(**b) for b in beats_data]`
+5. **Duration enforcement** — Even with strong prompting, the LLM sometimes produces beats that don't sum to the exact target duration. A post-processing step **scales all beat durations proportionally** to guarantee the correct total:
+
+   ```python
+   total = sum(b.duration_sec for b in beats)
+   if abs(total - target_duration_sec) > 0.1:
+       scale = target_duration_sec / total
+       for b in beats:
+           b.duration_sec = round(b.duration_sec * scale, 1)
+       # Fix rounding error on the last beat
+       remaining = target_duration_sec - sum(b.duration_sec for b in beats[:-1])
+       beats[-1].duration_sec = round(remaining, 1)
+   ```
+
+   **Example:** If the LLM generates 5 beats summing to 8.0s for a 10.0s target, each beat gets scaled by `10.0 / 8.0 = 1.25x`. A 2.0s beat becomes 2.5s, a 1.5s beat becomes 1.9s, etc. The last beat absorbs any floating-point rounding error.
+
+6. **Return Beat objects** — `[Beat(**b) for b in beats_data]`
 
 **Example input/output:**
 
@@ -772,6 +808,64 @@ async def generate_captions(
 
 ---
 
+## Service: Voice Generation — `services/voice_generator.py`
+
+This service generates text-to-speech audio for each beat's caption using **Microsoft Edge TTS** — a free neural voice engine that requires no API key.
+
+### Configuration
+
+```python
+VOICE = "en-US-GuyNeural"   # Deep, cinematic male voice for car marketing
+RATE = "-10%"                # Slightly slower for dramatic pacing
+PITCH = "-5Hz"               # Slightly lower pitch for gravitas
+```
+
+**Why these settings?** Car marketing reels benefit from a deeper, slower voiceover that conveys luxury and authority. `en-US-GuyNeural` is one of Edge TTS's highest-quality male voices. The reduced rate and pitch create a cinematic tone that matches the dramatic/elegant moods of the beats.
+
+### Function: `generate_voice_for_sequence(sequence)`
+
+```python
+async def generate_voice_for_sequence(
+    sequence: List[SequenceItem],
+) -> List[SequenceItem]
+```
+
+**Purpose:** For each beat in the sequence that has a caption, generate an MP3 voiceover file using Edge TTS.
+
+**Step-by-step process:**
+
+1. **Ensure voice directory exists** — Creates `storage/voices/` if it doesn't exist
+2. **For each sequence item:**
+   - **Skip if no caption** — Items without captions get no voice
+   - **Build filename** — `voice_beat_{beat_index}_{clip_id}.mp3` (deterministic naming for caching)
+   - **Check cache** — If the MP3 already exists on disk, skip generation and just set the URL
+   - **Generate audio** — Create an `edge_tts.Communicate` object with the caption text, voice, rate, and pitch settings
+   - **Save to disk** — `await communicate.save(str(voice_path))` — Edge TTS streams the audio and writes it as MP3
+   - **Set URL** — `item.voice_url = "/api/storage/voices/{filename}"` — this URL is served by the FastAPI static mount
+3. **Return updated sequence** — Each item now has a `voice_url` pointing to its MP3 file
+
+**Caching behavior:** The deterministic filename means re-generating the same reel won't re-synthesize identical audio. This saves time on iterative edits where only some beats change.
+
+**Example:**
+
+For a sequence item with `beat_index=2`, `clip_id="5d586bf45c62"`, and `caption="Precision Engineered"`:
+- Generated file: `storage/voices/voice_beat_2_5d586bf45c62.mp3`
+- Returned URL: `/api/storage/voices/voice_beat_2_5d586bf45c62.mp3`
+- The frontend Remotion `<Audio>` component fetches this URL and plays it synced to the beat's video
+
+**Edge TTS vs other TTS options:**
+
+| Option | Cost | Quality | API Key? | Latency |
+|---|---|---|---|---|
+| **Edge TTS** (chosen) | Free | High (neural) | No | ~0.5s per caption |
+| Google Cloud TTS | $4/1M chars | High | Yes | ~0.3s |
+| OpenAI TTS | $15/1M chars | Very high | Yes | ~1s |
+| pyttsx3 (offline) | Free | Low (robotic) | No | ~0.1s |
+
+Edge TTS provides the best quality-to-cost ratio for this use case — neural voice quality with zero cost and no API key setup.
+
+---
+
 ## Router: Upload — `routers/upload.py`
 
 ### `POST /api/upload`
@@ -816,6 +910,21 @@ async def match_clips_endpoint(req: MatchClipsRequest):
 - **Input:** `{ beats[], clips[] }` — the generated script beats and all clip metadata (with embeddings)
 - **Process:** Calls `match_clips()` in `clip_matcher.py`, which also calls `generate_captions()` internally
 - **Output:** `{ sequence[] }` — ordered list of matched beat→snippet assignments with captions and scores
+
+### `POST /api/generate-voice`
+
+```python
+@router.post("/generate-voice", response_model=MatchClipsResponse)
+async def generate_voice_endpoint(sequence: List[SequenceItem]):
+    updated = await generate_voice_for_sequence(sequence)
+    return MatchClipsResponse(sequence=updated)
+```
+
+- **Input:** `List[SequenceItem]` — the matched sequence with captions (from the match-clips step)
+- **Process:** Calls `generate_voice_for_sequence()` in `voice_generator.py` — generates an MP3 per beat via Edge TTS
+- **Output:** `{ sequence[] }` — same sequence items, now with `voice_url` fields populated pointing to the generated MP3 files
+
+**Note:** This endpoint reuses `MatchClipsResponse` as its response model since the output shape (a list of `SequenceItem`) is identical.
 
 ---
 
@@ -929,7 +1038,9 @@ For car marketing content where shots are visually distinct (wide shots vs close
 
 ---
 
-## Gemini API Calls Summary
+## External API Calls Summary
+
+### Gemini API Calls
 
 | Function | Model | Purpose | Call Pattern |
 |---|---|---|---|
@@ -939,7 +1050,18 @@ For car marketing content where shots are visually distinct (wide shots vs close
 | `embed_texts()` | `gemini-embedding-001` | Beat text → 768-dim vector | 1 batched call per matching |
 | `generate_captions()` | `gemini-2.5-flash` | Beat context → captions | 1 call per matching |
 
-**Total API calls for a typical workflow** (3 clips, 5 snippets each, 5 beats):
-- Upload: 15 vision calls + 3 embedding calls = 18 calls
-- Generate: 1 script call + 1 embedding call + 1 caption call = 3 calls
-- **Total: ~21 Gemini API calls**
+### Edge TTS Calls
+
+| Function | Voice | Purpose | Call Pattern |
+|---|---|---|---|
+| `generate_voice_for_sequence()` | `en-US-GuyNeural` | Caption → MP3 audio | 1 call per beat with a caption (sequential, cached) |
+
+### Total calls for a typical workflow (3 clips, 5 snippets each, 5 beats):
+
+| Phase | Calls | Details |
+|---|---|---|
+| Upload | 18 Gemini | 15 vision + 3 embedding |
+| Generate Script | 1 Gemini | 1 script generation |
+| Match Clips | 2 Gemini | 1 embedding + 1 caption |
+| Generate Voice | 5 Edge TTS | 1 per beat caption |
+| **Total** | **21 Gemini + 5 Edge TTS** | **26 total external calls** |

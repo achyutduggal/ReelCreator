@@ -56,6 +56,19 @@ export async function matchClips(
   return res.json();
 }
 
+export async function generateVoice(
+  sequence: SequenceItem[]
+): Promise<MatchClipsResponse> {
+  const res = await fetch(`${API_BASE}/generate-voice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sequence),
+  });
+
+  if (!res.ok) throw new Error(`Voice generation failed: ${res.statusText}`);
+  return res.json();
+}
+
 export async function renderReel(
   sequence: SequenceItem[],
   fps: number = 30,

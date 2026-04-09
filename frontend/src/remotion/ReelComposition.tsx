@@ -25,6 +25,7 @@ export const ReelComposition: React.FC<Props> = ({
             <Series.Sequence key={idx} durationInFrames={durationInFrames}>
               <ClipSequence
                 videoUrl={item.video_url}
+                voiceUrl={item.voice_url || ""}
                 startSec={item.start_sec}
                 endSec={item.end_sec}
                 caption={item.caption}

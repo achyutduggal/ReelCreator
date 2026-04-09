@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from "react";
 import type { ClipMetadata, Beat, SequenceItem } from "./types/reel";
-import { uploadClips, generateScript, matchClips } from "./api/client";
+import { uploadClips, generateScript, matchClips, generateVoice } from "./api/client";
 import UploadPanel from "./components/UploadPanel";
 import PromptInput from "./components/PromptInput";
 import ReelPreview from "./components/ReelPreview";
@@ -41,7 +41,10 @@ export default function App() {
         setBeats(scriptRes.beats);
 
         const matchRes = await matchClips(scriptRes.beats, clips);
-        setSequence(matchRes.sequence);
+
+        // Generate voiceover for each beat's caption
+        const voiceRes = await generateVoice(matchRes.sequence);
+        setSequence(voiceRes.sequence);
         setState("preview");
       } catch (err) {
         setError(err instanceof Error ? err.message : "Generation failed");

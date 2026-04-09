@@ -33,6 +33,7 @@ export interface SequenceItem {
   caption: string;
   score: number;
   video_url: string;
+  voice_url: string;
 }
 
 export interface UploadResponse {

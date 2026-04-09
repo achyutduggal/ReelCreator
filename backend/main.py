@@ -25,6 +25,7 @@ STORAGE_DIR.mkdir(exist_ok=True)
 (STORAGE_DIR / "uploads").mkdir(exist_ok=True)
 (STORAGE_DIR / "metadata").mkdir(exist_ok=True)
 (STORAGE_DIR / "renders").mkdir(exist_ok=True)
+(STORAGE_DIR / "voices").mkdir(exist_ok=True)
 
 app.mount(
     "/api/storage",

@@ -23,24 +23,39 @@ async function main() {
 
   const inputProps = JSON.parse(propsJson);
 
-  // Copy video files to public/ so Remotion can serve them via staticFile()
-  const publicDir = path.resolve(__dirname, "public", "videos");
-  fs.mkdirSync(publicDir, { recursive: true });
+  // Copy video and voice files to public/ so Remotion can serve them via staticFile()
+  const publicVideosDir = path.resolve(__dirname, "public", "videos");
+  const publicVoicesDir = path.resolve(__dirname, "public", "voices");
+  fs.mkdirSync(publicVideosDir, { recursive: true });
+  fs.mkdirSync(publicVoicesDir, { recursive: true });
 
-  const storageDir = path.resolve(__dirname, "..", "backend", "storage", "uploads");
+  const uploadsDir = path.resolve(__dirname, "..", "backend", "storage", "uploads");
+  const voicesDir = path.resolve(__dirname, "..", "backend", "storage", "voices");
+
   if (inputProps.sequence) {
     for (const item of inputProps.sequence) {
+      // Copy video file
       if (item.video_url) {
-        // video_url is like /api/storage/uploads/5d586bf45c62_video.mp4
         const filename = path.basename(item.video_url);
-        const src = path.join(storageDir, filename);
-        const dest = path.join(publicDir, filename);
+        const src = path.join(uploadsDir, filename);
+        const dest = path.join(publicVideosDir, filename);
         if (fs.existsSync(src) && !fs.existsSync(dest)) {
           fs.copyFileSync(src, dest);
-          console.log(`Copied ${filename} to public/videos/`);
+          console.log(`Copied video ${filename} to public/videos/`);
         }
-        // Rewrite video_url to use staticFile path
         item.video_url = `/videos/${filename}`;
+      }
+
+      // Copy voice file
+      if (item.voice_url) {
+        const filename = path.basename(item.voice_url);
+        const src = path.join(voicesDir, filename);
+        const dest = path.join(publicVoicesDir, filename);
+        if (fs.existsSync(src) && !fs.existsSync(dest)) {
+          fs.copyFileSync(src, dest);
+          console.log(`Copied voice ${filename} to public/voices/`);
+        }
+        item.voice_url = `/voices/${filename}`;
       }
     }
     // Clear backendUrl so ClipSequence uses staticFile

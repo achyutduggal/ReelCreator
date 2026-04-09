@@ -53,6 +53,7 @@ class SequenceItem(BaseModel):
     caption: str
     score: float
     video_url: str = ""
+    voice_url: str = ""
 
 
 class MatchClipsRequest(BaseModel):

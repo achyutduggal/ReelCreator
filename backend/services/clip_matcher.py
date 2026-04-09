@@ -73,11 +73,18 @@ async def match_clips(
 
     similarity_matrix = beat_vecs_normed @ snippet_vecs_normed.T
 
+    # Build a map of clip_id -> total duration for clamping
+    clip_durations = {}
+    for clip in clips:
+        clip_durations[clip.id] = clip.duration
+
     # Greedy assignment: for each beat, pick highest-scoring unassigned snippet
+    # Use the beat's duration_sec to set the time range (not the fixed 2s snippet window)
     assigned_snippets = set()
     sequence = []
 
     for beat_idx in range(len(beats)):
+        beat_duration = beats[beat_idx].duration_sec
         scores = similarity_matrix[beat_idx]
         sorted_indices = np.argsort(scores)[::-1]
 
@@ -85,12 +92,18 @@ async def match_clips(
             if snippet_idx not in assigned_snippets:
                 assigned_snippets.add(snippet_idx)
                 entry = snippet_entries[snippet_idx]
+
+                # Use snippet start as anchor, extend to beat's duration
+                start_sec = entry["start_sec"]
+                clip_total = clip_durations.get(entry["clip_id"], entry["end_sec"])
+                end_sec = min(start_sec + beat_duration, clip_total)
+
                 sequence.append(SequenceItem(
                     beat_index=beat_idx,
                     clip_id=entry["clip_id"],
                     snippet_index=entry["snippet_index"],
-                    start_sec=entry["start_sec"],
-                    end_sec=entry["end_sec"],
+                    start_sec=start_sec,
+                    end_sec=end_sec,
                     caption="",
                     score=float(scores[snippet_idx]),
                     video_url=entry["video_url"],

@@ -32,10 +32,12 @@ Available footage:
 {clip_context}
 
 Rules:
-- Total duration of all beats must equal {target_duration_sec} seconds
-- Each beat should be 1.5-3 seconds
+- The sum of all beat durations MUST equal EXACTLY {target_duration_sec} seconds. This is critical.
+- Each beat should be 2-4 seconds
+- Write enough beats so that durations add up to exactly {target_duration_sec} seconds
 - Write beats that can be fulfilled by the available footage
 - Each beat needs: description (what shot to use), duration_sec, mood (cinematic/dramatic/energetic/elegant)
+- Reuse similar footage types if needed to fill the duration
 
 Output ONLY valid JSON array:
 [{{"index": 0, "description": "...", "duration_sec": 2.0, "mood": "..."}}]"""
@@ -52,4 +54,16 @@ Output ONLY valid JSON array:
         text = text.rsplit("```", 1)[0]
 
     beats_data = json.loads(text)
-    return [Beat(**b) for b in beats_data]
+    beats = [Beat(**b) for b in beats_data]
+
+    # Enforce exact duration: scale beat durations to match target
+    total = sum(b.duration_sec for b in beats)
+    if total > 0 and abs(total - target_duration_sec) > 0.1:
+        scale = target_duration_sec / total
+        for b in beats:
+            b.duration_sec = round(b.duration_sec * scale, 1)
+        # Fix rounding error on the last beat
+        remaining = target_duration_sec - sum(b.duration_sec for b in beats[:-1])
+        beats[-1].duration_sec = round(remaining, 1)
+
+    return beats
