@@ -4,6 +4,45 @@
 
 The backend is a **Python FastAPI** application that powers an automatic marketing reel generator for car videos. It processes uploaded video clips, extracts metadata using AI, generates beat-by-beat scripts, matches clips to script beats via embedding similarity, and triggers video rendering.
 
+### What is a "Beat"?
+
+A **beat** is the fundamental unit of a reel script — a single shot or moment that the reel needs. Think of it as one instruction in a storyboard. When the LLM generates a script from the user's prompt, it breaks the reel into a sequence of beats, each describing:
+
+- **What to show** — e.g., "Wide establishing shot of the car in a dark city environment"
+- **How long** — e.g., 2.0 seconds
+- **What mood** — e.g., cinematic, dramatic, energetic, elegant
+
+**Example:** For a 10-second reel with the prompt *"A dramatic reveal of a luxury black car"*, the LLM might generate:
+
+| Beat | Description | Duration | Mood |
+|---|---|---|---|
+| 0 | Wide establishing shot of car in dark city | 2.0s | cinematic |
+| 1 | Slow pan across car body highlighting silhouette | 2.0s | dramatic |
+| 2 | Close-up of chrome headlights with sharp detail | 2.0s | dramatic |
+| 3 | Dynamic low angle shot showing the wheels | 2.0s | energetic |
+| 4 | Final wide pull-back revealing full car in dramatic lighting | 2.0s | cinematic |
+
+### Beat-to-Snippet Matching (What We're "Syncing")
+
+Each beat is a **creative intent** — it describes what we *want* to show. Each snippet is a **piece of real footage** — it describes what we actually *have*. The core job of the matching system is to connect these two:
+
+```
+Beat (what we want)                    Snippet (what we have)
+─────────────────                      ──────────────────────
+"Close-up of headlights"    ──match──▶ keyframe_2.jpg: "Tight close-up of chrome
+ (duration: 2s, mood: dramatic)         LED headlights with dramatic lighting"
+                                        (clip: luxury_reveal.mp4, 4.0s-6.0s)
+```
+
+The matching works by:
+1. **Embedding both** the beat description and all snippet descriptions into 768-dimensional vectors using `gemini-embedding-001`
+2. **Computing cosine similarity** between every beat-snippet pair (matrix multiplication)
+3. **Greedy assignment** — each beat gets the highest-scoring snippet that hasn't been taken yet
+
+This is why beats matter — they define the **structure, pacing, and narrative arc** of the reel. Without beats, we'd have random clips stitched together. With beats, the LLM acts as a creative director orchestrating which footage appears when, in what order, to tell a coherent visual story.
+
+The final output is a **sequence**: an ordered list of `(beat → snippet)` assignments, each with a start/end time in the source video, a marketing caption, and a similarity confidence score.
+
 ### Tech Stack
 
 | Component | Technology |
