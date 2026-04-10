@@ -62,6 +62,7 @@ export default function ReelPreview({ sequence, beats, clips }: Props) {
 
       <div className="flex gap-3">
         <button
+          type="button"
           onClick={handleExport}
           disabled={isRendering}
           className="bg-green-600 hover:bg-green-700 disabled:bg-gray-700 text-white font-medium py-2 px-6 rounded-lg text-sm transition-colors"

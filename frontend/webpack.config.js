@@ -47,6 +47,7 @@ module.exports = (env, argv) => {
           context: ["/api"],
           target: "http://localhost:8000",
           changeOrigin: true,
+          timeout: 600000,
         },
       ],
     },

@@ -2,6 +2,7 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,11 +24,25 @@ async function main() {
 
   const inputProps = JSON.parse(propsJson);
 
-  // Copy video and voice files to public/ so Remotion can serve them via staticFile()
-  const publicVideosDir = path.resolve(__dirname, "public", "videos");
-  const publicVoicesDir = path.resolve(__dirname, "public", "voices");
-  fs.mkdirSync(publicVideosDir, { recursive: true });
-  fs.mkdirSync(publicVoicesDir, { recursive: true });
+  // Use a temp directory for render assets instead of public/ to avoid
+  // triggering webpack dev server's file watcher (which causes page refreshes)
+  const tempPublicDir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-render-"));
+  const tempVideosDir = path.join(tempPublicDir, "videos");
+  const tempVoicesDir = path.join(tempPublicDir, "voices");
+  fs.mkdirSync(tempVideosDir, { recursive: true });
+  fs.mkdirSync(tempVoicesDir, { recursive: true });
+
+  // Copy base public assets (index.html etc.) into temp dir
+  const basePublicDir = path.resolve(__dirname, "public");
+  if (fs.existsSync(basePublicDir)) {
+    for (const entry of fs.readdirSync(basePublicDir)) {
+      const src = path.join(basePublicDir, entry);
+      const dest = path.join(tempPublicDir, entry);
+      if (fs.statSync(src).isFile()) {
+        fs.copyFileSync(src, dest);
+      }
+    }
+  }
 
   const uploadsDir = path.resolve(__dirname, "..", "backend", "storage", "uploads");
   const voicesDir = path.resolve(__dirname, "..", "backend", "storage", "voices");
@@ -38,10 +53,10 @@ async function main() {
       if (item.video_url) {
         const filename = path.basename(item.video_url);
         const src = path.join(uploadsDir, filename);
-        const dest = path.join(publicVideosDir, filename);
+        const dest = path.join(tempVideosDir, filename);
         if (fs.existsSync(src) && !fs.existsSync(dest)) {
           fs.copyFileSync(src, dest);
-          console.log(`Copied video ${filename} to public/videos/`);
+          console.log(`Copied video ${filename} to temp render dir`);
         }
         item.video_url = `/videos/${filename}`;
       }
@@ -50,10 +65,10 @@ async function main() {
       if (item.voice_url) {
         const filename = path.basename(item.voice_url);
         const src = path.join(voicesDir, filename);
-        const dest = path.join(publicVoicesDir, filename);
+        const dest = path.join(tempVoicesDir, filename);
         if (fs.existsSync(src) && !fs.existsSync(dest)) {
           fs.copyFileSync(src, dest);
-          console.log(`Copied voice ${filename} to public/voices/`);
+          console.log(`Copied voice ${filename} to temp render dir`);
         }
         item.voice_url = `/voices/${filename}`;
       }
@@ -66,7 +81,7 @@ async function main() {
   const bundleLocation = await bundle({
     entryPoint: path.resolve(__dirname, "src/remotion/index.ts"),
     webpackOverride: (config) => config,
-    publicDir: path.resolve(__dirname, "public"),
+    publicDir: tempPublicDir,
   });
 
   console.log("Selecting composition...");
@@ -89,6 +104,9 @@ async function main() {
     inputProps,
     timeoutInMilliseconds: 60000,
   });
+
+  // Clean up temp dir
+  fs.rmSync(tempPublicDir, { recursive: true, force: true });
 
   console.log(`Render complete: ${outputPath}`);
 }

@@ -148,8 +148,11 @@ ReelCreator/
 
 ### Installation
 
+<<<<<<< HEAD
 ### Make sure to install ffmpeg library for it to read and save video files !!!
 
+=======
+>>>>>>> 9b575a7 (changes)
 ```bash
 # Clone and enter project
 cd ReelCreator
