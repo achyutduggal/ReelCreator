@@ -52,3 +52,29 @@ export interface RenderResponse {
   video_url: string;
   status: string;
 }
+
+export interface Project {
+  id: string;
+  name: string;
+  prompt: string;
+  target_duration_sec: number;
+  beats: Beat[];
+  sequence: SequenceItem[];
+  clips: ClipMetadata[];
+  created_at: string;
+  updated_at: string;
+  thumbnail_url: string;
+  render_url: string;
+}
+
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  prompt: string;
+  created_at: string;
+  updated_at: string;
+  thumbnail_url: string;
+  render_url: string;
+  slide_count: number;
+  total_duration: number;
+}

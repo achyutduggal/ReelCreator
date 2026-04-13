@@ -59,18 +59,18 @@ The final output is a **sequence**: an ordered list of `(beat → snippet)` assi
 ### Architecture Layers
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    Routers (API Layer)                │
-│   upload.py    │    generate.py    │    render.py     │
-├──────────────────────────────────────────────────────┤
-│                   Services (Business Logic)           │
-│  metadata.py  │ script_generator.py │ clip_matcher.py │
-│               │ voice_generator.py  │ caption_gen.py  │
-├──────────────────────────────────────────────────────┤
-│                  Storage (Filesystem + JSON)          │
-│  storage/uploads/  │  storage/metadata/  │  renders/  │
-│                    │  storage/voices/    │            │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Routers (API Layer)                     │
+│  upload.py  │  generate.py  │  render.py  │  projects.py    │
+├─────────────────────────────────────────────────────────────┤
+│                    Services (Business Logic)                  │
+│  metadata.py  │ script_generator.py │ clip_matcher.py        │
+│               │ voice_generator.py  │ caption_generator.py   │
+├─────────────────────────────────────────────────────────────┤
+│                   Storage (Filesystem + JSON)                 │
+│  storage/uploads/  │  storage/metadata/  │  storage/renders/ │
+│  storage/voices/   │  storage/projects/  │                   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Request Pipeline
@@ -104,10 +104,33 @@ User uploads clips          User enters prompt                     User clicks E
        │                    │ Caption →   │
        │                    │ MP3 audio   │
        │                    │ per beat    │
+       │                    │ + Duration  │
+       │                    │ enforcement │
        │                    └─────────────┘
-       ▼
-  Returns ClipMetadata       Returns Sequence          Returns MP4 URL
+       ▼                           │
+  Returns ClipMetadata       POST /api/projects/save     POST /api/render
+                                   │                           │
+                            ┌──────▼──────┐             ┌─────▼──────┐
+                            │ Save full   │             │ Remotion   │
+                            │ project     │             │ render via │
+                            │ state as    │             │ temp dir   │
+                            │ JSON file   │             │ (no page   │
+                            └─────────────┘             │  refresh)  │
+                                                        └────────────┘
+       ▼                           ▼                           ▼
+  Returns ClipMetadata       Returns Project            Returns MP4 URL
                              (with voice_url)           (with audio)
+```
+
+**Project lifecycle endpoints:**
+
+```
+GET  /api/projects           → List all saved projects
+GET  /api/projects/{id}      → Load full project state for editing
+POST /api/projects/save      → Save/update project (auto-generates ID if new)
+DELETE /api/projects/{id}    → Delete a project
+
+POST /api/regenerate-voice   → Re-synthesize TTS for a single beat after caption edit
 ```
 
 ---
@@ -123,15 +146,16 @@ backend/
 ├── routers/
 │   ├── __init__.py
 │   ├── upload.py                # POST /api/upload
-│   ├── generate.py              # POST /api/generate-script, /api/match-clips, /api/generate-voice
-│   └── render.py                # POST /api/render
+│   ├── generate.py              # POST /api/generate-script, /api/match-clips, /api/generate-voice, /api/regenerate-voice
+│   ├── render.py                # POST /api/render
+│   └── projects.py              # CRUD for saved projects
 ├── services/
 │   ├── __init__.py
 │   ├── metadata.py              # Keyframe extraction, Gemini Vision, Gemini Embedding
 │   ├── script_generator.py      # Beat-by-beat script generation via Gemini LLM
 │   ├── clip_matcher.py          # Embedding similarity matching + greedy assignment
-│   ├── caption_generator.py     # Marketing caption generation per beat
-│   └── voice_generator.py       # Edge TTS voice-over generation per beat
+│   ├── caption_generator.py     # Marketing narration script generation (word-budget enforced)
+│   └── voice_generator.py       # Edge TTS voice-over generation + hard duration enforcement
 ├── models/
 │   ├── __init__.py
 │   └── schemas.py               # Pydantic request/response models
@@ -146,6 +170,9 @@ backend/
     ├── voices/                  # Generated TTS MP3 files per beat
     │   ├── voice_beat_0_{clip_id}.mp3
     │   ├── voice_beat_1_{clip_id}.mp3
+    │   └── ...
+    ├── projects/                # Saved project state as JSON
+    │   ├── {project_id}.json    # Full project: clips, beats, sequence, prompt
     │   └── ...
     └── renders/                 # Rendered MP4 output files
 ```
@@ -205,7 +232,7 @@ A matched beat-to-clip assignment — the final output that drives the video ren
 | `snippet_index` | `int` | Which snippet within the clip |
 | `start_sec` | `float` | Start time within the source video |
 | `end_sec` | `float` | End time within the source video |
-| `caption` | `str` | Marketing caption text (3-8 words) |
+| `caption` | `str` | Marketing narration text (word-budget enforced to fit beat duration) |
 | `score` | `float` | Cosine similarity score (0.0-1.0) |
 | `video_url` | `str` | URL to the source video file |
 | `voice_url` | `str` | URL to the generated TTS MP3 file (empty if no voice) |
@@ -217,10 +244,13 @@ A matched beat-to-clip assignment — the final output that drives the video ren
 | `UploadResponse` | `POST /api/upload` | `clips: List[ClipMetadata]` |
 | `GenerateScriptRequest` | `POST /api/generate-script` | `prompt`, `target_duration_sec`, `clips[]` |
 | `GenerateScriptResponse` | `POST /api/generate-script` | `beats: List[Beat]` |
-| `MatchClipsRequest` | `POST /api/match-clips` | `beats[]`, `clips[]` |
+| `MatchClipsRequest` | `POST /api/match-clips` | `beats[]`, `clips[]`, `prompt` |
 | `MatchClipsResponse` | `POST /api/match-clips` | `sequence: List[SequenceItem]` |
+| `GenerateVoiceRequest` | `POST /api/generate-voice` | `sequence[]`, `target_duration_sec` |
 | `RenderRequest` | `POST /api/render` | `sequence[]`, `fps`, `width`, `height` |
 | `RenderResponse` | `POST /api/render` | `video_url`, `status` |
+| `Project` | `POST /api/projects/save`, `GET /api/projects/{id}` | `id`, `name`, `prompt`, `target_duration_sec`, `beats[]`, `sequence[]`, `clips[]`, `created_at`, `updated_at`, `thumbnail_url`, `render_url` |
+| `ProjectListItem` | `GET /api/projects` | `id`, `name`, `prompt`, `created_at`, `updated_at`, `thumbnail_url`, `render_url`, `slide_count`, `total_duration` |
 
 ---
 
@@ -258,14 +288,15 @@ app.add_middleware(
 app.mount("/api/storage", StaticFiles(directory="storage"), name="storage")
 ```
 
-**Directory Creation** — Ensures `storage/uploads/`, `storage/metadata/`, `storage/renders/`, and `storage/voices/` exist on startup.
+**Directory Creation** — Ensures `storage/uploads/`, `storage/metadata/`, `storage/renders/`, `storage/voices/`, and `storage/projects/` exist on startup.
 
 **Router Registration** — All routers are prefixed with `/api`:
 
 ```python
-app.include_router(upload.router, prefix="/api")    # POST /api/upload
-app.include_router(generate.router, prefix="/api")   # POST /api/generate-script, /api/match-clips
-app.include_router(render.router, prefix="/api")     # POST /api/render
+app.include_router(upload.router, prefix="/api")      # POST /api/upload
+app.include_router(generate.router, prefix="/api")    # POST /api/generate-script, /api/match-clips, /api/generate-voice, /api/regenerate-voice
+app.include_router(render.router, prefix="/api")      # POST /api/render
+app.include_router(projects.router, prefix="/api")    # CRUD /api/projects/*
 ```
 
 **Health Check** — `GET /api/health` returns `{"status": "ok"}`.
@@ -625,16 +656,17 @@ This is the same embedding model (`gemini-embedding-001`) used in `metadata.py` 
 
 ---
 
-### Function: `match_clips(beats, clips)`
+### Function: `match_clips(beats, clips, prompt)`
 
 ```python
 async def match_clips(
     beats: List[Beat],
     clips: List[ClipMetadata],
+    prompt: str = "",
 ) -> List[SequenceItem]
 ```
 
-**Purpose:** For each script beat, find the best matching video snippet using embedding cosine similarity, then generate captions.
+**Purpose:** For each script beat, find the best matching video snippet using embedding cosine similarity, then generate a narration script. The `prompt` parameter is passed through to the caption generator so the narration matches the user's creative direction.
 
 **Step 1: Flatten all snippets into a searchable list**
 
@@ -753,105 +785,184 @@ for beat_idx in range(len(beats)):
 - Much simpler to implement and debug
 - The first beat gets the best match, which aligns with the human expectation that early beats should be strong
 
-**Step 6: Generate captions**
+**Step 6: Generate narration script**
 
 ```python
-sequence = await generate_captions(beats, sequence)
+sequence = await generate_captions(beats, sequence, clips, prompt)
 ```
 
-Calls the caption generator to add marketing text to each sequence item.
+Calls the caption generator with full context — beats, matched sequence, clip metadata (for snippet descriptions), and the user's prompt — to generate a connected marketing narration script with enforced word budgets.
 
 ---
 
-## Service: Caption Generation — `services/caption_generator.py`
+## Service: Narration Script Generation — `services/caption_generator.py`
 
-### Function: `generate_captions(beats, sequence)`
+### Constants
+
+```python
+WORDS_PER_SECOND = 2.2  # Average speaking rate for Edge TTS at -10% speed
+```
+
+### Function: `generate_captions(beats, sequence, clips, prompt)`
 
 ```python
 async def generate_captions(
     beats: List[Beat],
     sequence: List[SequenceItem],
+    clips: List[ClipMetadata],
+    prompt: str = "",
 ) -> List[SequenceItem]
 ```
 
-**Purpose:** Generate short, punchy marketing captions for each beat in the sequence.
+**Purpose:** Generate a cohesive marketing narration script where each beat gets a spoken line that references specific car features visible in the matched footage, with strict per-beat word budgets to ensure TTS audio fits within beat durations.
 
 **Step-by-step process:**
 
-1. **Build beat context** — For each matched sequence item, create a description string:
+1. **Build rich context per beat** — For each matched sequence item, look up the actual snippet description from clip metadata to know what's visually on screen:
    ```
-   Beat 0: Wide establishing shot of car in dark city (mood: cinematic)
-   Beat 1: Slow pan across car body highlighting silhouette (mood: dramatic)
-   ...
-   ```
-
-2. **Single Gemini call** with this prompt:
-   ```
-   Generate short, punchy marketing captions (3-8 words each) for a luxury car reel.
-   Each caption should match the beat's mood and visual.
-
-   Beats:
-   {beat_descriptions}
-
-   Output ONLY valid JSON array of strings, one caption per beat:
-   ["caption1", "caption2", ...]
+   Beat 1 (2.5s, MAX 4 WORDS):
+     Mood: cinematic
+     Shot: Wide establishing shot of car in dark city
+     Footage shows: Low-angle tracking shot of matte black sedan emerging from shadow in urban setting
    ```
 
-3. **Parse JSON response** — Same fence-stripping logic as script generator
+2. **Calculate word budgets** — For each beat: `max_words = max(3, int((duration - 0.3) * 2.2))`. The 0.3s padding accounts for TTS tail silence. A 2.5s beat gets `max(3, int(2.2 * 2.2)) = 4 words`.
 
-4. **Assign captions** to each `SequenceItem.caption`
+3. **Single Gemini call** with a structured prompt containing:
+   - The user's creative direction (prompt)
+   - **"CRITICAL TIMING RULES — non-negotiable"** section demanding exact word count adherence
+   - Per-beat context with `MAX N WORDS` labels
+   - Instructions to write a connected marketing pitch referencing visible car features
+   - Instructions to match beat mood (cinematic = grand, dramatic = intense, energetic = dynamic, elegant = refined)
 
-**Example output:**
+4. **Parse JSON response** — Same fence-stripping logic as script generator
+
+5. **Hard truncation fallback** — After parsing, any caption exceeding its calculated word budget is truncated to exactly `max_words`. This guarantees the word limit even if the LLM ignores the instruction:
+   ```python
+   words = captions[i].split()
+   if len(words) > max_words:
+       captions[i] = " ".join(words[:max_words])
+   ```
+
+6. **Assign captions** to each `SequenceItem.caption`
+
+**Why this changed from simple taglines:**
+
+Previously, the caption generator produced 3-8 word taglines like "Darkness Meets Power". When the narration script generator was introduced to write full marketing sentences, the TTS audio for long sentences exceeded beat durations, causing the voice generator to extend `end_sec` without limit — a 30s target became 74s. The word budget system solves this by constraining narration length at the source.
+
+**Example output** (for a 30s reel with the prompt *"Luxury sedan reveal"*):
 ```json
-["Darkness Meets Power", "Sculpted in Shadow", "Precision Engineered", "Born to Dominate", "Unmistakably Bold"]
+[
+    "From the shadows, a silhouette emerges.",
+    "Every curve sculpted with intention.",
+    "Chrome headlights cut through darkness.",
+    "Twenty-one inch alloys, planted wide.",
+    "This isn't just a car."
+]
 ```
+
+**Word budget example** (for beats of varying duration):
+
+| Beat | Duration | Speakable | Max Words | Narration |
+|---|---|---|---|---|
+| 1 | 3.0s | 2.7s | 5 | "From the shadows, a silhouette" |
+| 2 | 2.0s | 1.7s | 3 | "Every curve sculpted" |
+| 3 | 4.0s | 3.7s | 8 | "Chrome headlights cut through the urban darkness" |
 
 ---
 
 ## Service: Voice Generation — `services/voice_generator.py`
 
-This service generates text-to-speech audio for each beat's caption using **Microsoft Edge TTS** — a free neural voice engine that requires no API key.
+This service generates text-to-speech audio for each beat's caption using **Microsoft Edge TTS** — a free neural voice engine that requires no API key. It also enforces the target reel duration as a hard cap.
 
 ### Configuration
 
 ```python
-VOICE = "en-US-GuyNeural"   # Deep, cinematic male voice for car marketing
-RATE = "-10%"                # Slightly slower for dramatic pacing
-PITCH = "-5Hz"               # Slightly lower pitch for gravitas
+VOICE = "en-US-GuyNeural"     # Deep, cinematic male voice for car marketing
+RATE = "-10%"                  # Slightly slower for dramatic pacing
+PITCH = "-5Hz"                 # Slightly lower pitch for gravitas
+VOICE_TAIL_PADDING = 0.3      # Seconds of silence after voice ends before next beat
+MAX_BEAT_EXPANSION = 1.0      # Maximum any single beat can expand beyond its original duration
 ```
 
 **Why these settings?** Car marketing reels benefit from a deeper, slower voiceover that conveys luxury and authority. `en-US-GuyNeural` is one of Edge TTS's highest-quality male voices. The reduced rate and pitch create a cinematic tone that matches the dramatic/elegant moods of the beats.
 
-### Function: `generate_voice_for_sequence(sequence)`
+### Function: `get_audio_duration(filepath)`
+
+```python
+def get_audio_duration(filepath: str) -> float
+```
+
+**Purpose:** Get the duration of a generated MP3 file in seconds using ffprobe. Used to check if TTS audio exceeds the beat's video duration.
+
+### Function: `generate_voice_for_sequence(sequence, target_duration_sec)`
 
 ```python
 async def generate_voice_for_sequence(
     sequence: List[SequenceItem],
+    target_duration_sec: float = 0,
 ) -> List[SequenceItem]
 ```
 
-**Purpose:** For each beat in the sequence that has a caption, generate an MP3 voiceover file using Edge TTS.
+**Purpose:** For each beat in the sequence that has a caption, generate an MP3 voiceover file using Edge TTS. If `target_duration_sec > 0`, enforces the total reel duration as a hard cap.
 
 **Step-by-step process:**
 
-1. **Ensure voice directory exists** — Creates `storage/voices/` if it doesn't exist
+1. **Record original durations** — Store each beat's original `end_sec - start_sec` before any voice-driven expansion
 2. **For each sequence item:**
    - **Skip if no caption** — Items without captions get no voice
    - **Build filename** — `voice_beat_{beat_index}_{clip_id}.mp3` (deterministic naming for caching)
    - **Check cache** — If the MP3 already exists on disk, skip generation and just set the URL
-   - **Generate audio** — Create an `edge_tts.Communicate` object with the caption text, voice, rate, and pitch settings
-   - **Save to disk** — `await communicate.save(str(voice_path))` — Edge TTS streams the audio and writes it as MP3
-   - **Set URL** — `item.voice_url = "/api/storage/voices/{filename}"` — this URL is served by the FastAPI static mount
-3. **Return updated sequence** — Each item now has a `voice_url` pointing to its MP3 file
+   - **Generate audio** — `edge_tts.Communicate` with caption text, voice, rate, and pitch settings
+   - **Save to disk** — `await communicate.save(str(voice_path))`
+   - **Set URL** — `item.voice_url = "/api/storage/voices/{filename}"`
+   - **Capped expansion** — If TTS audio is longer than the beat, expand `end_sec` but cap at `original_duration + MAX_BEAT_EXPANSION (1.0s)`. This prevents a single beat from ballooning the reel
+3. **Hard duration enforcement** — If `target_duration_sec > 0`, call `_enforce_total_duration()` to proportionally scale all beat durations so they sum to exactly the target
 
-**Caching behavior:** The deterministic filename means re-generating the same reel won't re-synthesize identical audio. This saves time on iterative edits where only some beats change.
+**Duration enforcement** is a critical post-processing step:
 
-**Example:**
+```python
+def _enforce_total_duration(sequence, target_duration_sec):
+    total = sum(item.end_sec - item.start_sec for item in sequence)
+    if abs(total - target_duration_sec) < 0.1:
+        return  # Already correct
 
-For a sequence item with `beat_index=2`, `clip_id="5d586bf45c62"`, and `caption="Precision Engineered"`:
-- Generated file: `storage/voices/voice_beat_2_5d586bf45c62.mp3`
-- Returned URL: `/api/storage/voices/voice_beat_2_5d586bf45c62.mp3`
-- The frontend Remotion `<Audio>` component fetches this URL and plays it synced to the beat's video
+    scale = target_duration_sec / total
+    for item in sequence:
+        duration = item.end_sec - item.start_sec
+        item.end_sec = round(item.start_sec + duration * scale, 2)
+
+    # Fix rounding error on the last beat
+    current_total = sum(item.end_sec - item.start_sec for item in sequence)
+    diff = target_duration_sec - current_total
+    sequence[-1].end_sec = round(sequence[-1].end_sec + diff, 2)
+```
+
+**Why three layers of duration enforcement?**
+
+The reel duration must match the user's target exactly. The LLM, caption generator, and TTS engine each introduce drift:
+
+| Layer | Where | What it does |
+|---|---|---|
+| 1. Script generator | `script_generator.py` | Scales beat durations post-LLM to sum to target |
+| 2. Caption generator | `caption_generator.py` | Enforces per-beat word budgets so TTS audio fits within beat duration |
+| 3. Voice generator | `voice_generator.py` | Caps per-beat expansion at 1.0s, then proportionally scales all beats back to exact target |
+
+Without all three layers, a 30s target can produce a 74s reel (as was observed before this fix).
+
+### Function: `regenerate_voice_for_item(item)`
+
+```python
+async def regenerate_voice_for_item(item: SequenceItem) -> SequenceItem
+```
+
+**Purpose:** Regenerate TTS audio for a single sequence item after the user edits its caption in the slide editor.
+
+**Process:**
+1. Delete the old cached MP3 file (caption changed, so the old audio is stale)
+2. Generate new audio with Edge TTS using the updated caption
+3. Allow capped expansion (up to `MAX_BEAT_EXPANSION`) if the new audio is longer
+4. Return the updated item with new `voice_url` and potentially adjusted `end_sec`
 
 **Edge TTS vs other TTS options:**
 
@@ -903,28 +1014,41 @@ async def generate_script_endpoint(req: GenerateScriptRequest):
 ```python
 @router.post("/match-clips", response_model=MatchClipsResponse)
 async def match_clips_endpoint(req: MatchClipsRequest):
-    sequence = await match_clips(req.beats, req.clips)
+    sequence = await match_clips(req.beats, req.clips, req.prompt)
     return MatchClipsResponse(sequence=sequence)
 ```
 
-- **Input:** `{ beats[], clips[] }` — the generated script beats and all clip metadata (with embeddings)
-- **Process:** Calls `match_clips()` in `clip_matcher.py`, which also calls `generate_captions()` internally
-- **Output:** `{ sequence[] }` — ordered list of matched beat→snippet assignments with captions and scores
+- **Input:** `{ beats[], clips[], prompt }` — the generated script beats, all clip metadata (with embeddings), and the user's original prompt for narration context
+- **Process:** Calls `match_clips()` in `clip_matcher.py`, which also calls `generate_captions()` internally. The `prompt` is forwarded to the caption/narration generator so it can reference the user's creative direction.
+- **Output:** `{ sequence[] }` — ordered list of matched beat→snippet assignments with narration captions and scores
 
 ### `POST /api/generate-voice`
 
 ```python
 @router.post("/generate-voice", response_model=MatchClipsResponse)
-async def generate_voice_endpoint(sequence: List[SequenceItem]):
-    updated = await generate_voice_for_sequence(sequence)
+async def generate_voice_endpoint(req: GenerateVoiceRequest):
+    updated = await generate_voice_for_sequence(req.sequence, req.target_duration_sec)
     return MatchClipsResponse(sequence=updated)
 ```
 
-- **Input:** `List[SequenceItem]` — the matched sequence with captions (from the match-clips step)
-- **Process:** Calls `generate_voice_for_sequence()` in `voice_generator.py` — generates an MP3 per beat via Edge TTS
-- **Output:** `{ sequence[] }` — same sequence items, now with `voice_url` fields populated pointing to the generated MP3 files
+- **Input:** `GenerateVoiceRequest { sequence[], target_duration_sec }` — the matched sequence with captions and the target reel duration for enforcement
+- **Process:** Calls `generate_voice_for_sequence()` in `voice_generator.py` — generates an MP3 per beat via Edge TTS, then enforces total duration by capping per-beat expansion and proportionally scaling all beats back to the target
+- **Output:** `{ sequence[] }` — same sequence items with `voice_url` fields populated and `end_sec` values adjusted to meet the target duration
 
 **Note:** This endpoint reuses `MatchClipsResponse` as its response model since the output shape (a list of `SequenceItem`) is identical.
+
+### `POST /api/regenerate-voice`
+
+```python
+@router.post("/regenerate-voice", response_model=SequenceItem)
+async def regenerate_voice_endpoint(item: SequenceItem):
+    updated = await regenerate_voice_for_item(item)
+    return updated
+```
+
+- **Input:** A single `SequenceItem` — typically after the user has edited its caption in the slide editor
+- **Process:** Calls `regenerate_voice_for_item()` in `voice_generator.py` — deletes the cached MP3, re-synthesizes via Edge TTS with the updated caption, measures audio duration, and caps beat expansion at `MAX_BEAT_EXPANSION` (1.0s)
+- **Output:** Updated `SequenceItem` with new `voice_url` and adjusted `end_sec`
 
 ---
 
@@ -959,13 +1083,77 @@ async def render_reel(req: RenderRequest):
   3. Build `input_props` JSON with the sequence data, fps, and backend URL
   4. **Spawn subprocess** — calls `node render-server.mjs` with the props, output path, and dimensions
   5. The Node process:
-     - Copies source video files to `frontend/public/videos/` (so Remotion can access them locally)
-     - Bundles the Remotion React project with webpack
+     - Creates a **temporary directory** (`os.tmpdir()`) to isolate render assets — this avoids writing to `frontend/public/` which would trigger webpack dev server hot reload and refresh the page
+     - Copies base public assets and source video/voice files to the temp dir
+     - Bundles the Remotion React project with webpack, using the temp dir as `publicDir`
      - Renders each frame via headless Chromium
      - Stitches frames into an MP4 with ffmpeg
+     - Cleans up the temp directory after render completes
   6. If subprocess fails, returns 500 with stderr details
   7. If it times out (>300s), returns 504
 - **Output:** `{ video_url, status: "complete" }`
+
+---
+
+## Router: Projects — `routers/projects.py`
+
+Provides CRUD operations for persisting reel projects as JSON files in `storage/projects/`.
+
+### Helpers
+
+- **`_ensure_dir()`** — Creates `storage/projects/` directory if it doesn't exist
+- **`_project_path(project_id)`** — Returns the file path for a given project: `storage/projects/{id}.json`
+- **`_serialize(project)`** — Pydantic v1/v2 compatibility shim for converting model to dict
+- **`_now_iso()`** — Returns current UTC timestamp in ISO format
+
+### `POST /api/projects/save`
+
+```python
+@router.post("/projects/save", response_model=Project)
+async def save_project(project: Project):
+```
+
+- **Input:** Full `Project` object (id may be empty for new projects)
+- **Process:**
+  1. If `id` is empty, generates a new 12-character hex ID and sets `created_at`
+  2. Always updates `updated_at` to current UTC time
+  3. Auto-derives `thumbnail_url` from the first clip in the sequence if not set
+  4. Auto-generates `name` from first 50 characters of prompt if empty
+  5. Writes the full project as pretty-printed JSON to `storage/projects/{id}.json`
+- **Output:** The saved `Project` object with all fields populated
+
+### `GET /api/projects`
+
+```python
+@router.get("/projects", response_model=List[ProjectListItem])
+async def list_projects():
+```
+
+- **Input:** None
+- **Process:** Scans `storage/projects/*.json`, sorted by file modification time (newest first). For each project, calculates `slide_count` and `total_duration` from the sequence data.
+- **Output:** `List[ProjectListItem]` — lightweight summaries with id, name, prompt, timestamps, thumbnail, render URL, slide count, and total duration
+
+### `GET /api/projects/{project_id}`
+
+```python
+@router.get("/projects/{project_id}", response_model=Project)
+async def get_project(project_id: str):
+```
+
+- **Input:** Project ID (path parameter)
+- **Process:** Reads and deserializes the JSON file. Returns 404 if not found.
+- **Output:** Full `Project` object with all state (clips, beats, sequence, etc.)
+
+### `DELETE /api/projects/{project_id}`
+
+```python
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str):
+```
+
+- **Input:** Project ID (path parameter)
+- **Process:** Deletes the JSON file from `storage/projects/`. Returns 404 if not found.
+- **Output:** `{ status: "deleted" }`
 
 ---
 
@@ -1048,20 +1236,22 @@ For car marketing content where shots are visually distinct (wide shots vs close
 | `embed_descriptions()` | `gemini-embedding-001` | Text → 768-dim vector | 1 batched call per clip |
 | `generate_script()` | `gemini-2.5-flash` | User prompt → beat script | 1 call per generation |
 | `embed_texts()` | `gemini-embedding-001` | Beat text → 768-dim vector | 1 batched call per matching |
-| `generate_captions()` | `gemini-2.5-flash` | Beat context → captions | 1 call per matching |
+| `generate_captions()` | `gemini-2.5-flash` | Beat context + clip descriptions + prompt → narration script | 1 call per matching |
 
 ### Edge TTS Calls
 
 | Function | Voice | Purpose | Call Pattern |
 |---|---|---|---|
-| `generate_voice_for_sequence()` | `en-US-GuyNeural` | Caption → MP3 audio | 1 call per beat with a caption (sequential, cached) |
+| `generate_voice_for_sequence()` | `en-US-GuyNeural` | Caption → MP3 audio + duration enforcement | 1 call per beat with a caption (sequential, cached) |
+| `regenerate_voice_for_item()` | `en-US-GuyNeural` | Re-synthesize after caption edit | 1 call per edited beat (on-demand, cache busted) |
 
 ### Total calls for a typical workflow (3 clips, 5 snippets each, 5 beats):
 
 | Phase | Calls | Details |
 |---|---|---|
 | Upload | 18 Gemini | 15 vision + 3 embedding |
-| Generate Script | 1 Gemini | 1 script generation |
-| Match Clips | 2 Gemini | 1 embedding + 1 caption |
-| Generate Voice | 5 Edge TTS | 1 per beat caption |
-| **Total** | **21 Gemini + 5 Edge TTS** | **26 total external calls** |
+| Generate Script | 1 Gemini | 1 script generation (with proportional duration scaling) |
+| Match Clips | 2 Gemini | 1 embedding + 1 narration script generation |
+| Generate Voice | 5 Edge TTS + 5 ffprobe | 1 TTS + 1 duration measurement per beat, then total duration enforcement |
+| Edit (per slide) | 1 Edge TTS + 1 ffprobe | On-demand when user edits a caption in the slide editor |
+| **Total** | **21 Gemini + 5 Edge TTS** | **26 total external calls** (+ additional Edge TTS on manual edits) |

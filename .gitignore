@@ -8,6 +8,7 @@ dist/
 
 # Backend storage (uploads, embeddings/metadata JSONs, keyframes, renders)
 backend/storage/
+backend/storage
 
 # Environment variables (API keys)
 backend/.env

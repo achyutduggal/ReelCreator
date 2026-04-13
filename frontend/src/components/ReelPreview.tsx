@@ -8,11 +8,17 @@ interface Props {
   sequence: SequenceItem[];
   beats: Beat[];
   clips: ClipMetadata[];
+  onRenderComplete?: (renderUrl: string) => void;
 }
 
 const BACKEND_URL = "http://localhost:8000";
 
-export default function ReelPreview({ sequence, beats, clips }: Props) {
+export default function ReelPreview({
+  sequence,
+  beats,
+  clips,
+  onRenderComplete,
+}: Props) {
   const [isRendering, setIsRendering] = useState(false);
   const [renderUrl, setRenderUrl] = useState<string | null>(null);
 
@@ -32,7 +38,9 @@ export default function ReelPreview({ sequence, beats, clips }: Props) {
     setIsRendering(true);
     try {
       const res = await renderReel(sequence);
-      setRenderUrl(`${BACKEND_URL}${res.video_url}`);
+      const fullUrl = `${BACKEND_URL}${res.video_url}`;
+      setRenderUrl(fullUrl);
+      onRenderComplete?.(res.video_url);
     } catch (err) {
       console.error("Render failed:", err);
     } finally {

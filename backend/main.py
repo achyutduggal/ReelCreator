@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from routers import upload, generate, render
+from routers import upload, generate, render, projects
 
 load_dotenv()
 
@@ -26,6 +26,7 @@ STORAGE_DIR.mkdir(exist_ok=True)
 (STORAGE_DIR / "metadata").mkdir(exist_ok=True)
 (STORAGE_DIR / "renders").mkdir(exist_ok=True)
 (STORAGE_DIR / "voices").mkdir(exist_ok=True)
+(STORAGE_DIR / "projects").mkdir(exist_ok=True)
 
 app.mount(
     "/api/storage",
@@ -36,6 +37,7 @@ app.mount(
 app.include_router(upload.router, prefix="/api")
 app.include_router(generate.router, prefix="/api")
 app.include_router(render.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -59,10 +59,16 @@ class SequenceItem(BaseModel):
 class MatchClipsRequest(BaseModel):
     beats: List[Beat]
     clips: List[ClipMetadata]
+    prompt: str = ""
 
 
 class MatchClipsResponse(BaseModel):
     sequence: List[SequenceItem]
+
+
+class GenerateVoiceRequest(BaseModel):
+    sequence: List[SequenceItem]
+    target_duration_sec: float = 0
 
 
 class RenderRequest(BaseModel):
@@ -75,3 +81,29 @@ class RenderRequest(BaseModel):
 class RenderResponse(BaseModel):
     video_url: str
     status: str = "complete"
+
+
+class Project(BaseModel):
+    id: str = ""
+    name: str = ""
+    prompt: str = ""
+    target_duration_sec: float = 10.0
+    beats: List[Beat] = []
+    sequence: List[SequenceItem] = []
+    clips: List[ClipMetadata] = []
+    created_at: str = ""
+    updated_at: str = ""
+    thumbnail_url: str = ""
+    render_url: str = ""
+
+
+class ProjectListItem(BaseModel):
+    id: str
+    name: str
+    prompt: str
+    created_at: str
+    updated_at: str
+    thumbnail_url: str
+    render_url: str
+    slide_count: int
+    total_duration: float

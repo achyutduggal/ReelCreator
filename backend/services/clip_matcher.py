@@ -29,6 +29,7 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
 async def match_clips(
     beats: List[Beat],
     clips: List[ClipMetadata],
+    prompt: str = "",
 ) -> List[SequenceItem]:
     # Collect all snippet info
     snippet_entries = []
@@ -110,7 +111,7 @@ async def match_clips(
                 ))
                 break
 
-    # Generate captions for matched beats
-    sequence = await generate_captions(beats, sequence)
+    # Generate narration script for matched beats
+    sequence = await generate_captions(beats, sequence, clips, prompt)
 
     return sequence
